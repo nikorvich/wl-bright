@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+# wl-bright — brightness control via gammastep
+# Author: nikorvich (https://github.com/nikorvich)
+# License: MIT
+
+STATE_FILE="$HOME/.local/bin/wl-bright_state"
+
+DEFAULT="0.70"
+STEP="0.05"
+MIN="0.10"
+MAX="1.00"
+
+# initialize state file if missing or invalid
+if [ ! -f "$STATE_FILE" ] || ! grep -Eq '^[0-9]+\.[0-9]+$' "$STATE_FILE"; then
+    echo "$DEFAULT" > "$STATE_FILE"
+fi
+
+BRIGHT=$(<"$STATE_FILE")
+[ -z "$BRIGHT" ] && BRIGHT="$DEFAULT"
+
+CMD="${1:-}"
+VAL="${2:-}"
+
+case "$CMD" in
+    --help|-h)
+        echo "wl-bright - brightness control via gammastep"
+        echo
+        echo "usage:"
+        echo "  wl-bright up           increase brightness"
+        echo "  wl-bright down         decrease brightness"
+        echo "  wl-bright set <value>  set brightness (0.10 - 1.00)"
+        echo "  wl-bright get          show current value"
+        echo
+        echo "notes:"
+        echo "  - requires gammastep to apply"
+        echo "  - optimized for Wayland environments"
+        exit 0
+        ;;
+    --version|-v)
+        echo "wl-bright 1.0.0"
+        echo "by nikorvich"
+        echo "https://github.com/nikorvich"
+        exit 0
+        ;;
+    up)
+        # bash doesn't support floats → use bc
+        NEW=$(echo "$BRIGHT + $STEP" | bc -l)
+        ;;
+    down)
+        NEW=$(echo "$BRIGHT - $STEP" | bc -l)
+        ;;
+    set)
+        [ -z "$VAL" ] && { echo "[wl-bright] usage: wl-bright set <value>"; exit 1; }
+        NEW="$VAL"
+        ;;
+    get)
+        echo "$BRIGHT"
+        exit 0
+        ;;
+    *)
+        echo "[wl-bright] usage: wl-bright {up|down|get|set|--help|--version}"
+        exit 1
+        ;;
+esac
+
+# clamp to safe range (avoid overflow/underflow)
+if (( $(echo "$NEW > $MAX" | bc -l) )); then NEW=$MAX; fi
+if (( $(echo "$NEW < $MIN" | bc -l) )); then NEW=$MIN; fi
+
+# persist state independently of application success
+printf "%.2f\n" "$NEW" > "$STATE_FILE"
+
+# apply brightness via gammastep (visual gamma, not hardware)
+if ! command -v gammastep >/dev/null 2>&1; then
+    echo "[wl-bright] value saved ($NEW), but not applied"
+    echo "[wl-bright] install 'gammastep' using your package manager"
+    exit 0
+fi
+
+# only apply in Wayland environments (backend constraint)
+if [ "${XDG_SESSION_TYPE:-}" != "wayland" ]; then
+    echo "[wl-bright] value saved ($NEW), but not applied"
+    echo "[wl-bright] current session: ${XDG_SESSION_TYPE:-unknown}"
+    exit 0
+fi
+
+# restart gammastep to apply new brightness immediately
+pkill -x gammastep -u "$USER" 2>/dev/null || true
+
+gammastep -O 6500 -b "$NEW" -l 0:0 -m wayland >/dev/null 2>&1 &
